@@ -12,7 +12,7 @@ The repo also has tools to **test many different configurations at once** and ge
 ### Step 1: Clone the repo
 
 ```bash
-git clone https://github.com/yourusername/your-repo.git
+git clone https://github.com/mukhokironmoy/NewroKaaya_Internship.git
 cd your-repo
 ```
 
