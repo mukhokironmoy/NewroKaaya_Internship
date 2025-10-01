@@ -9,7 +9,7 @@ import textwrap
 from PIL import Image
 
 #Enter the name of your test 
-TEST_NAME = "Individual_controls_testing"
+TEST_NAME = "combination_of_controls"
 
 #Enter the relative path of your test case json
 TEST_JSON_PATH = r"test_cases\combination_of_controls.json"

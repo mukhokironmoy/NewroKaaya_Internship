@@ -15,8 +15,8 @@ from grayscale import process_image as gray_img
 
 # Option 1: Paste JSON as a string here
 CONFIG_JSON = """
-{
-    "name": "WebP Grayscale",
+  {
+    "name": "WebP Grayscale + QF + Downscale",
     "SAMPLE_INPUT_DIR": "C:/PoiseVideos/4825_Prasanna K.B_189_20250916173306/4825_Prasanna K.B_189_20250916173306",
     "SAMPLE_SIZE": 50,
     "TOGGLE_SAMPLE_CREATOR": true,
@@ -24,11 +24,11 @@ CONFIG_JSON = """
     "TOGGLE_CONVEX_HULL": true,
     "TOGGLE_CONVEX_HULL_CROP": false,
     "TOGGLE_GRAYSCALE": true,
-    "TOGGLE_DOWNSCALE": false,
+    "TOGGLE_DOWNSCALE": true,
     "OUTPUT_FORMAT": "webp",
-    "JPEG_QUALITY": 100,
-    "WEBP_QUALITY": 100,
-    "SCALE_FACTOR": 1,
+    "JPEG_QUALITY": 75,
+    "WEBP_QUALITY": 75,
+    "SCALE_FACTOR": 0.75,
     "PADDING": 60,
     "SAVE_DEBUG": false
   }
