@@ -1,0 +1,3 @@
+Case,JPEG_Q,Scale,ConvexHull,Crop,Grayscale,Downscale,MozJPEG,SampleSizeKB,FinalSizeKB,Compression%
+JPG QF = 10,10,1,True,False,False,True,True,344.2392578125,148.09765625,56.97827807580688
+JPG QF = 10 b/w,10,1,True,False,True,True,True,344.453125,117.849609375,65.78645951462917

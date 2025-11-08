@@ -1,0 +1,17 @@
+{
+  "name": "JPG QF = 10 b/w",
+  "INPUT_DIR": "C:/DATA/Internships/Newro Kaaya/Data/Data/Ghosh/Bottle/Left/PoiseVideos_20251102171753/PoiseVideos_20251102171753",
+  "OUTPUT_DIR": "output/final_results",
+  "TEMP_DIR": "test_sample",
+  "SAMPLE_SIZE": 20,
+  "TOGGLE_SAMPLE_CREATOR": true,
+  "TOGGLE_CONVEX_HULL": true,
+  "TOGGLE_CONVEX_HULL_CROP": false,
+  "TOGGLE_GRAYSCALE": true,
+  "TOGGLE_DOWNSCALE": true,
+  "JPEG_QUALITY": 10,
+  "SCALE_FACTOR": 1,
+  "PADDING": 60,
+  "SAVE_DEBUG": false,
+  "MOZJPEG_PATH": "C:/DATA/Internships/Newro Kaaya/Working_Build_v3/mozjpeg_4.1.1_x64/mozjpeg_4.1.1_x64/shared/tools/cjpeg.exe"
+}

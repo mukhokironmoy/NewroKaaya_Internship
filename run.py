@@ -1,134 +1,236 @@
-from pathlib import Path
-from PIL import Image
-import cv2, numpy as np, shutil, json
-
-# Import helpers
-from sample_creator import create_test_sample
-from convert_format import process_image as convert_img
-from convex_hull import process_image as convex_img
-from downquality_and_downscale import process_image as downscale_img
-from grayscale import process_image as gray_img
-
-# ===================================================
-# CONFIG (two options)
-# ===================================================
-
-# Option 1: Paste JSON as a string here
-CONFIG_JSON = """
-  {
-    "name": "WebP Grayscale + QF + Downscale",
-    "SAMPLE_INPUT_DIR": "C:/PoiseVideos/4825_Prasanna K.B_189_20250916173306/4825_Prasanna K.B_189_20250916173306",
-    "SAMPLE_SIZE": 50,
-    "TOGGLE_SAMPLE_CREATOR": true,
-    "TOGGLE_CONVERT_FORMAT": true,
-    "TOGGLE_CONVEX_HULL": true,
-    "TOGGLE_CONVEX_HULL_CROP": false,
-    "TOGGLE_GRAYSCALE": true,
-    "TOGGLE_DOWNSCALE": true,
-    "OUTPUT_FORMAT": "webp",
-    "JPEG_QUALITY": 75,
-    "WEBP_QUALITY": 75,
-    "SCALE_FACTOR": 0.75,
-    "PADDING": 60,
-    "SAVE_DEBUG": false
-  }
+"""
+Unified JPG-only image processing pipeline (Final Version — Black Background)
+------------------------------------------------------------------------------
+Loads configuration from JSON and applies:
+  1. Optional sample creation
+  2. Convex hull masking (with optional cropping)
+  3. Optional grayscale conversion
+  4. Optional downscaling
+All input and output are strictly .jpg.
+This version:
+  ✅ Fixes color inversion
+  ✅ Maintains black background outside hull
+  ✅ Handles grayscale + MozJPEG properly
 """
 
-# Option 2: Load from external JSON file (uncomment this)
-# CONFIG_PATH = Path("config.json")
-# with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-#     CONFIG = json.load(f)
+import cv2, json, shutil, random, subprocess
+import numpy as np
+from pathlib import Path
+from PIL import Image
+import mediapipe as mp
 
-# Use Option 1 by default
-CONFIG = json.loads(CONFIG_JSON)
+# ==========================
+# Load Configuration
+# ==========================
+CONFIG_PATH = Path("config.json")
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    CFG = json.load(f)
 
-# --- Convert certain keys into Path objects ---
-if "SAMPLE_INPUT_DIR" in CONFIG:
-    CONFIG["SAMPLE_INPUT_DIR"] = Path(CONFIG["SAMPLE_INPUT_DIR"])
-if "SAMPLE_OUTPUT_DIR" not in CONFIG:
-    CONFIG["SAMPLE_OUTPUT_DIR"] = Path("test_sample")
+# Convert to Path objects
+CFG["INPUT_DIR"] = Path(CFG["INPUT_DIR"])
+CFG["OUTPUT_DIR"] = Path(CFG.get("OUTPUT_DIR", "output/final_results"))
+CFG["TEMP_DIR"] = Path(CFG.get("TEMP_DIR", "test_sample"))
 
-# Output dirs
-OUTPUT_DIR = Path("output")
-FINAL_RESULT_DIR = OUTPUT_DIR / "final_results"
+# Ensure directories exist
+for key in ["INPUT_DIR", "OUTPUT_DIR", "TEMP_DIR"]:
+    CFG[key].mkdir(parents=True, exist_ok=True)
+
+# ==========================
+# Global Controls
+# ==========================
+TOGGLE_SAMPLE_CREATOR = CFG.get("TOGGLE_SAMPLE_CREATOR", True)
+TOGGLE_CONVEX_HULL = CFG.get("TOGGLE_CONVEX_HULL", True)
+TOGGLE_CONVEX_HULL_CROP = CFG.get("TOGGLE_CONVEX_HULL_CROP", False)
+TOGGLE_GRAYSCALE = CFG.get("TOGGLE_GRAYSCALE", True)
+TOGGLE_DOWNSCALE = CFG.get("TOGGLE_DOWNSCALE", False)
+
+SAMPLE_SIZE = CFG.get("SAMPLE_SIZE", 50)
+JPEG_QUALITY = CFG.get("JPEG_QUALITY", 80)
+SCALE_FACTOR = CFG.get("SCALE_FACTOR", 1.0)
+PADDING = CFG.get("PADDING", 60)
+SAVE_DEBUG = CFG.get("SAVE_DEBUG", False)
+
+# Mediapipe setup
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(static_image_mode=True, model_complexity=2)
+mp_drawing = mp.solutions.drawing_utils
+
+# ==========================
+# Utility functions
+# ==========================
+def clean_dir(path: Path):
+    """Remove and recreate directory."""
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
 
 
-def pipeline(cfg: dict):
-    FINAL_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+def save_jpg(image: np.ndarray, path: Path):
+    """
+    Save image as JPG using MozJPEG for better compression.
+    Accepts BGR or grayscale; outputs correct color with black background.
+    """
+    CJPEG_PATH = Path(CFG.get("MOZJPEG_PATH", "cjpeg.exe"))
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Stage 1: Sample creation
-    if cfg["TOGGLE_SAMPLE_CREATOR"]:
-        create_test_sample(cfg["SAMPLE_INPUT_DIR"], cfg["SAMPLE_OUTPUT_DIR"], cfg["SAMPLE_SIZE"])
-        source = cfg["SAMPLE_OUTPUT_DIR"]
+    temp_png = path.with_name(path.stem + "_temp.png")
+
+    # Write temporary PNG
+    if len(image.shape) == 2:  # grayscale
+        cv2.imwrite(str(temp_png), image)
+    else:  # BGR color
+        cv2.imwrite(str(temp_png), image)
+
+    # Try MozJPEG first
+    if CJPEG_PATH.exists():
+        try:
+            subprocess.run([
+                str(CJPEG_PATH),
+                "-quality", str(JPEG_QUALITY),
+                "-progressive",
+                "-optimize",
+                "-outfile", str(path),
+                str(temp_png)
+            ], check=True)
+            print(f"✅ [MozJPEG] Saved {path.name} (Q={JPEG_QUALITY})")
+        except Exception as e:
+            print(f"⚠️ MozJPEG failed for {path.name}: {e}")
+            _save_with_pillow(image, path)
     else:
-        source = cfg["SAMPLE_INPUT_DIR"]
+        _save_with_pillow(image, path)
 
-    files = list(source.glob("*.*"))
+    if temp_png.exists():
+        temp_png.unlink()
+
+
+def _save_with_pillow(image: np.ndarray, path: Path):
+    """Fallback save using Pillow if MozJPEG unavailable."""
+    if len(image.shape) == 2:  # grayscale
+        Image.fromarray(image).save(path, "JPEG", quality=JPEG_QUALITY, optimize=True)
+    else:  # color image (BGR → RGB)
+        Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)).save(path, "JPEG", quality=JPEG_QUALITY, optimize=True)
+    print("⚠️ Saved with Pillow fallback.")
+
+
+def crop_to_mask(image: np.ndarray, mask: np.ndarray):
+    """Crops the image tightly around the nonzero region of the mask."""
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0 or len(ys) == 0:
+        return image
+    return image[ys.min():ys.max(), xs.min():xs.max()]
+
+
+# ==========================
+# Stage 1 — Sample Creation
+# ==========================
+def create_sample(input_dir: Path, output_dir: Path, sample_size: int):
+    images = sorted([p for p in input_dir.glob("*.jpg")])
+    if not images:
+        raise ValueError(f"No .jpg files in {input_dir}")
+    sample = random.sample(images, min(sample_size, len(images)))
+    for img in sample:
+        shutil.copy(img, output_dir / img.name)
+    print(f"✅ Copied {len(sample)} samples to {output_dir}")
+
+
+# ==========================
+# Stage 2 — Convex Hull Mask
+# ==========================
+def apply_convex_hull(img: np.ndarray, crop=False):
+    """
+    Apply convex hull around detected pose landmarks.
+    Keeps inside of hull, fills background with black.
+    """
+    h, w, _ = img.shape
+    rgb_for_pose = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    results = pose.process(rgb_for_pose)
+
+    if not results.pose_landmarks:
+        return img
+
+    # Extract pose points and convex hull
+    points = np.array([[int(lm.x * w), int(lm.y * h)] for lm in results.pose_landmarks.landmark])
+    hull = cv2.convexHull(points)
+
+    # Create binary mask and apply padding
+    mask = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(mask, hull, 255)
+    mask = cv2.dilate(mask, np.ones((PADDING, PADDING), np.uint8), iterations=1)
+
+    # Black background instead of white
+    result = np.zeros_like(img)
+    result[mask == 255] = img[mask == 255]
+
+    if crop:
+        result = crop_to_mask(result, mask)
+
+    return result  # stays BGR
+
+
+# ==========================
+# Stage 3 — Grayscale
+# ==========================
+def to_grayscale(img: np.ndarray):
+    """Convert color (BGR) image to grayscale."""
+    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+
+# ==========================
+# Stage 4 — Downscale
+# ==========================
+def downscale(img: np.ndarray, factor: float):
+    """Resize image by given factor."""
+    h, w = img.shape[:2]
+    new_size = (int(w * factor), int(h * factor))
+    return cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
+
+
+# ==========================
+# Main Pipeline
+# ==========================
+def pipeline():
+    clean_dir(CFG["OUTPUT_DIR"])
+    if TOGGLE_SAMPLE_CREATOR:
+        clean_dir(CFG["TEMP_DIR"])
+        create_sample(CFG["INPUT_DIR"], CFG["TEMP_DIR"], SAMPLE_SIZE)
+        source = CFG["TEMP_DIR"]
+    else:
+        source = CFG["INPUT_DIR"]
+
+    files = list(source.glob("*.jpg"))
     if not files:
-        print(f"⚠️ No files found in {source}")
+        print("⚠️ No input JPG files found.")
         return
 
-    print(f"📂 Found {len(files)} files to process from {source}")
-
     for f in files:
-        try:
-            img = Image.open(f)
-            fname, fmt, params = f.name, img.format, {}
+        img = cv2.imread(str(f))
+        if img is None:
+            print(f"⚠️ Could not read {f.name}")
+            continue
 
-            # Stage 2: Convert format
-            if cfg["TOGGLE_CONVERT_FORMAT"]:
-                img, fname, fmt, params = convert_img(
-                    img, fname,
-                    cfg["OUTPUT_FORMAT"],
-                    cfg["JPEG_QUALITY"],
-                    cfg["WEBP_QUALITY"]
-                )
+        # 1️⃣ Convex Hull
+        if TOGGLE_CONVEX_HULL:
+            img = apply_convex_hull(img, crop=TOGGLE_CONVEX_HULL_CROP)
 
-            # Stage 3: Convex hull
-            if cfg["TOGGLE_CONVEX_HULL"]:
-                cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                cv_res, fname, dbg = convex_img(
-                    cv_img, fname,
-                    crop=cfg["TOGGLE_CONVEX_HULL_CROP"],
-                    padding=cfg["PADDING"],
-                    jpeg_quality=cfg["JPEG_QUALITY"],
-                    webp_quality=cfg["WEBP_QUALITY"],
-                    save_debug=cfg["SAVE_DEBUG"],
-                    debug_dir=OUTPUT_DIR / "convex_hull/debug"
-                )
-                img = Image.fromarray(cv2.cvtColor(cv_res, cv2.COLOR_BGR2RGB))
+        # 2️⃣ Grayscale
+        if TOGGLE_GRAYSCALE:
+            img = to_grayscale(img)
 
-            # Stage 4: Downscale
-            if cfg["TOGGLE_DOWNSCALE"]:
-                img, fname, fmt, params = downscale_img(
-                    img, fname,
-                    scale_factor=cfg["SCALE_FACTOR"],
-                    jpeg_quality=cfg["JPEG_QUALITY"],
-                    webp_quality=cfg["WEBP_QUALITY"]
-                )
+        # 3️⃣ Downscale
+        if TOGGLE_DOWNSCALE and SCALE_FACTOR < 1:
+            img = downscale(img, SCALE_FACTOR)
 
-            # Stage 5: Grayscale
-            if cfg["TOGGLE_GRAYSCALE"]:
-                img, fname, fmt, params = gray_img(
-                    img, fname,
-                    jpeg_quality=cfg["JPEG_QUALITY"],
-                    webp_quality=cfg["WEBP_QUALITY"]
-                )
+        # 4️⃣ Save result
+        out_path = CFG["OUTPUT_DIR"] / f.name
+        save_jpg(img, out_path)
+        print(f"✅ Saved {out_path.name}")
 
-            # Final save
-            out_path = FINAL_RESULT_DIR / fname
-            img.save(out_path, fmt, **params)
-            print(f"✅ Final saved {fname}")
-
-        except Exception as e:
-            print(f"⚠️ Failed {f.name}: {e}")
+    print("🎉 Processing complete!")
 
 
+# ==========================
+# Run
+# ==========================
 if __name__ == "__main__":
-    if FINAL_RESULT_DIR.exists():
-        shutil.rmtree(FINAL_RESULT_DIR)
-    FINAL_RESULT_DIR.mkdir(parents=True, exist_ok=True)
-
-    print(f"🚀 Running pipeline: {CONFIG['name']}")
-    pipeline(CONFIG)
-    print("🎉 Pipeline finished!")
+    print(f"🚀 Running unified JPG pipeline: {CFG.get('name', 'Unnamed run')}")
+    pipeline()

@@ -12,230 +12,25 @@ venv/
 
 
 
---- FILE: clean_dir.py ---
+--- FILE: config.json ---
 
-import shutil
-from pathlib import Path
-
-def clean_directory(dir_path: Path):
-    """Remove all files and subdirectories inside the given directory."""
-    if not dir_path.exists():
-        return
-    if not dir_path.is_dir():
-        raise ValueError(f"{dir_path} is not a directory")
-
-    for item in dir_path.iterdir():
-        if item.is_file() or item.is_symlink():
-            item.unlink()
-        elif item.is_dir():
-            shutil.rmtree(item)
-
-if __name__ == "__main__":
-    target = Path("test_sample")
-    clean_directory(target)
-    print(f"✅ Cleaned directory: {target}")
-
-
---- FILE: convert_format.py ---
-
-from pathlib import Path
-from PIL import Image
-
-# === Defaults for standalone ===
-INPUT_DIR = Path("test_sample")
-OUTPUT_FORMAT = "jpg"
-JPEG_QUALITY = 100
-WEBP_QUALITY = 100
-
-def process_image(img: Image.Image, filename: str,
-                  output_format: str = OUTPUT_FORMAT,
-                  jpeg_quality: int = JPEG_QUALITY,
-                  webp_quality: int = WEBP_QUALITY):
-    """Convert image to given format."""
-    ext = output_format.lower()
-    out_name = Path(filename).with_suffix(f".{ext}")
-    if ext in ["jpg", "jpeg"]:
-        return img.convert("RGB"), out_name.name, "JPEG", {"quality": jpeg_quality}
-    elif ext == "webp":
-        return img.convert("RGB"), out_name.name, "WEBP", {"quality": webp_quality}
-    return img.convert("RGB"), out_name.name, ext.upper(), {}
-
-def process_file(img_path: Path,
-                 output_format: str = OUTPUT_FORMAT,
-                 jpeg_quality: int = JPEG_QUALITY,
-                 webp_quality: int = WEBP_QUALITY):
-    with Image.open(img_path) as img:
-        img, new_name, fmt, params = process_image(img, img_path.name,
-                                                   output_format, jpeg_quality, webp_quality)
-        out_path = img_path.with_suffix(f".{output_format}")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        img.save(out_path, fmt, **params)
-        if out_path != img_path:
-            img_path.unlink()
-        print(f"✅ Converted {img_path.name} → {out_path.name}")
-
-def main():
-    for img_path in INPUT_DIR.glob("*.*"):
-        process_file(img_path)
-
-if __name__ == "__main__":
-    main()
-
-
---- FILE: convex_hull.py ---
-
-import cv2
-import mediapipe as mp
-import numpy as np
-from pathlib import Path
-from PIL import Image
-from clean_dir import clean_directory
-
-# === Defaults for standalone ===
-INPUT_DIR = Path("test_sample")
-OUTPUT_DIR = Path("output/convex_hull/results")
-DEBUG_DIR = Path("output/convex_hull/debug")
-PADDING = 60
-SAVE_DEBUG = True
-CROP_TO_HULL = False
-JPEG_QUALITY, WEBP_QUALITY = 100, 100
-
-# Mediapipe setup
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
-pose = mp_pose.Pose(static_image_mode=True, model_complexity=2)
-
-def save_image(path: Path, image: np.ndarray,
-               jpeg_quality=80, webp_quality=80):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    img_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    ext = path.suffix.lower()
-    if ext in [".jpg", ".jpeg"]:
-        img_pil.save(path, "JPEG", quality=jpeg_quality, optimize=True)
-    elif ext == ".webp":
-        img_pil.save(path, "WEBP", quality=webp_quality, method=6)
-    else:
-        img_pil.save(path)
-
-def crop_to_mask(image: np.ndarray, mask: np.ndarray):
-    ys, xs = np.where(mask > 0)
-    if len(xs) == 0 or len(ys) == 0:
-        return image
-    return image[ys.min():ys.max(), xs.min():xs.max()]
-
-def process_image(img: np.ndarray, filename: str,
-                  crop: bool = CROP_TO_HULL,
-                  padding: int = PADDING,
-                  jpeg_quality: int = JPEG_QUALITY,
-                  webp_quality: int = WEBP_QUALITY,
-                  save_debug: bool = SAVE_DEBUG,
-                  debug_dir: Path = DEBUG_DIR):
-    """Apply convex hull mask and optionally crop."""
-    h, w, _ = img.shape
-    results = pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    if not results.pose_landmarks:
-        return np.zeros_like(img), filename, None
-
-    points = np.array([[int(lm.x*w), int(lm.y*h)] for lm in results.pose_landmarks.landmark])
-    hull = cv2.convexHull(points)
-
-    mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.fillConvexPoly(mask, hull, 255)
-    kernel = np.ones((padding, padding), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=1)
-
-    result = np.zeros_like(img)
-    result[mask == 255] = img[mask == 255]
-
-    if crop:
-        result = crop_to_mask(result, mask)
-
-    debug_img = None
-    if save_debug:
-        debug_img = img.copy()
-        mp_drawing.draw_landmarks(debug_img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-        cv2.polylines(debug_img, [hull], True, (255, 0, 0), 2)
-        if crop:
-            debug_img = crop_to_mask(debug_img, mask)
-
-    return result, filename, debug_img
-
-def process_file(img_path: Path,
-                 crop: bool = CROP_TO_HULL,
-                 padding: int = PADDING,
-                 jpeg_quality: int = JPEG_QUALITY,
-                 webp_quality: int = WEBP_QUALITY,
-                 save_debug: bool = SAVE_DEBUG,
-                 debug_dir: Path = DEBUG_DIR):
-    img = cv2.imread(str(img_path))
-    if img is None: return
-    res, fname, dbg = process_image(img, img_path.name, crop, padding,
-                                    jpeg_quality, webp_quality, save_debug, debug_dir)
-    out_path = OUTPUT_DIR / fname
-    save_image(out_path, res, jpeg_quality, webp_quality)
-    if save_debug and dbg is not None:
-        save_image(debug_dir / fname, dbg, jpeg_quality, webp_quality)
-    print(f"✅ Processed {img_path.name}")
-
-def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-    clean_directory(OUTPUT_DIR)
-    clean_directory(DEBUG_DIR)
-    for f in INPUT_DIR.glob("*.*"):
-        process_file(f)
-
-if __name__ == "__main__":
-    main()
-
-
---- FILE: downquality_and_downscale.py ---
-
-from pathlib import Path
-from PIL import Image
-from clean_dir import clean_directory
-
-# === Defaults for standalone ===
-INPUT_DIR = Path(r"output\grayscale")
-OUTPUT_DIR = Path(r"output/downscaled")
-SCALE_FACTOR = 1
-JPEG_QUALITY, WEBP_QUALITY = 70, 70
-
-def process_image(img: Image.Image, filename: str,
-                  scale_factor: float = SCALE_FACTOR,
-                  jpeg_quality: int = JPEG_QUALITY,
-                  webp_quality: int = WEBP_QUALITY):
-    w, h = img.size
-    new_size = (int(w*scale_factor), int(h*scale_factor))
-    out_img = img.resize(new_size, Image.LANCZOS)
-    ext = filename.split(".")[-1].lower()
-    if ext in ["jpg","jpeg"]:
-        return out_img, filename, "JPEG", {"quality": jpeg_quality}
-    elif ext == "webp":
-        return out_img, filename, "WEBP", {"quality": webp_quality}
-    return out_img, filename, img.format, {}
-
-def process_file(img_path: Path,
-                 scale_factor: float = SCALE_FACTOR,
-                 jpeg_quality: int = JPEG_QUALITY,
-                 webp_quality: int = WEBP_QUALITY):
-    with Image.open(img_path) as img:
-        out_img, fname, fmt, params = process_image(img, img_path.name,
-                                                    scale_factor, jpeg_quality, webp_quality)
-        out_path = OUTPUT_DIR / fname
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_img.save(out_path, fmt, **params)
-        print(f"✅ Downscaled {img_path.name}")
-
-def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    clean_directory(OUTPUT_DIR)
-    for f in INPUT_DIR.glob("*.*"):
-        process_file(f)
-
-if __name__ == "__main__":
-    main()
-
+{
+  "name": "JPG QF = 10 b/w",
+  "INPUT_DIR": "C:/DATA/Internships/Newro Kaaya/Data/Data/Ghosh/Bottle/Left/PoiseVideos_20251102171753/PoiseVideos_20251102171753",
+  "OUTPUT_DIR": "output/final_results",
+  "TEMP_DIR": "test_sample",
+  "SAMPLE_SIZE": 20,
+  "TOGGLE_SAMPLE_CREATOR": true,
+  "TOGGLE_CONVEX_HULL": true,
+  "TOGGLE_CONVEX_HULL_CROP": false,
+  "TOGGLE_GRAYSCALE": true,
+  "TOGGLE_DOWNSCALE": true,
+  "JPEG_QUALITY": 10,
+  "SCALE_FACTOR": 1,
+  "PADDING": 60,
+  "SAVE_DEBUG": false,
+  "MOZJPEG_PATH": "C:/DATA/Internships/Newro Kaaya/Working_Build_v3/mozjpeg_4.1.1_x64/mozjpeg_4.1.1_x64/shared/tools/cjpeg.exe"
+}
 
 --- FILE: dump_project.py ---
 
@@ -340,47 +135,224 @@ if __name__ == "__main__":
     main()
 
 
---- FILE: grayscale.py ---
+--- FILE: README.md ---
 
-from pathlib import Path
-from PIL import Image
-from clean_dir import clean_directory
+# 🧩 Image Processing Pipeline – Beginner Guide
 
-# === Defaults for standalone ===
-INPUT_DIR = Path(r"output/convex_hull/results")   # fixed path (use raw string or /)
-OUTPUT_DIR = Path("output/grayscale")
-JPEG_QUALITY, WEBP_QUALITY = 100, 100
+This project helps you process images with different steps like **format conversion, convex hull masking, grayscale, and downscaling**.
+You can control everything using **toggles in a JSON config**.
 
-def process_image(img: Image.Image, filename: str,
-                  jpeg_quality: int = 100,
-                  webp_quality: int = 100):
-    gray = img.convert("L")
-    ext = filename.split(".")[-1].lower()
-    if ext in ["jpg", "jpeg"]:
-        return gray, filename, "JPEG", {"quality": jpeg_quality}
-    elif ext == "webp":
-        return gray, filename, "WEBP", {"quality": webp_quality}
-    return gray, filename, img.format, {}
+The repo also has tools to **test many different configurations at once** and generate a **report with charts and images**.
 
-def process_file(img_path: Path,
-                 jpeg_quality: int = JPEG_QUALITY,
-                 webp_quality: int = WEBP_QUALITY):
-    with Image.open(img_path) as img:
-        gray, fname, fmt, params = process_image(img, img_path.name,
-                                                 jpeg_quality, webp_quality)
-        out_path = OUTPUT_DIR / fname
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        gray.save(out_path, fmt, **params)
-        print(f"✅ Grayscaled {img_path.name}")
+---
 
-def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    clean_directory(OUTPUT_DIR)
-    for f in INPUT_DIR.glob("*.*"):
-        process_file(f)
+## 1. 📦 Setup Instructions
 
-if __name__ == "__main__":
-    main()
+### Step 1: Clone the repo
+
+```bash
+git clone https://github.com/mukhokironmoy/NewroKaaya_Internship.git
+cd your-repo
+```
+
+### Step 2: Create a virtual environment (Python 3.9)
+
+```bash
+py -3.9 -m venv .venv
+# Linux/Mac
+source .venv/bin/activate
+# Windows (PowerShell)
+.venv\Scripts\Activate
+```
+
+### Step 3: Install requirements
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## 2. 📂 Project Overview
+
+Key scripts:
+
+- **`run.py`** → Runs the pipeline on one configuration (you edit JSON inside it or load an external one).
+- **`test_pipeline_report.py`** → Runs many test cases (from JSON files in `test_cases/`) and generates reports.
+- Helper scripts:
+
+  - `sample_creator.py` → picks a random sample of images
+  - `convert_format.py` → changes image format (JPG/WEBP)
+  - `convex_hull.py` → applies background mask
+  - `grayscale.py` → turns images grayscale
+  - `downquality_and_downscale.py` → resizes / adjusts quality
+
+Outputs:
+
+- `output/final_results/` → results from your last run
+- `test_cases/<TEST_NAME>/<timestamp>/` → results & reports from batch testing
+
+---
+
+## 3. ▶️ Running the Pipeline with `run.py`
+
+There are **two ways to set config in run.py**:
+
+---
+
+### **Option A: Edit Inline JSON (easiest to start with)**
+
+Inside `run.py`, you’ll see:
+
+```python
+CONFIG_JSON = """
+{
+  "name": "WebP Grayscale",
+  "SAMPLE_INPUT_DIR": "C:/path/to/your/images",
+  "SAMPLE_SIZE": 50,
+  "TOGGLE_SAMPLE_CREATOR": true,
+  "TOGGLE_CONVERT_FORMAT": true,
+  "TOGGLE_CONVEX_HULL": true,
+  "TOGGLE_CONVEX_HULL_CROP": false,
+  "TOGGLE_GRAYSCALE": true,
+  "TOGGLE_DOWNSCALE": false,
+  "OUTPUT_FORMAT": "webp",
+  "JPEG_QUALITY": 100,
+  "WEBP_QUALITY": 100,
+  "SCALE_FACTOR": 1,
+  "PADDING": 60,
+  "SAVE_DEBUG": false
+}
+"""
+```
+
+👉 **What to change here:**
+
+- `SAMPLE_INPUT_DIR`: Path to your input folder of images.
+
+  - Example Windows: `"C:/Users/you/Pictures/my_dataset"`
+  - Example Linux/Mac: `"/home/you/Pictures/my_dataset"`
+
+- `SAMPLE_SIZE`: Number of random images to use if `TOGGLE_SAMPLE_CREATOR = true`.
+
+👉 **How to run:**
+
+```bash
+python run.py
+```
+
+Results go to `output/final_results/`.
+
+---
+
+### **Option B: Use an External JSON Config**
+
+1. Create a new file, e.g. `config.json`, with the same structure as above.
+2. In `run.py`, comment out **Option A** and uncomment Option B:
+
+   ```python
+   # CONFIG_PATH = Path("config.json")
+   # with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+   #     CONFIG = json.load(f)
+   ```
+
+3. Now run:
+
+   ```bash
+   python run.py
+   ```
+
+---
+
+## 4. 🧪 Running Batch Tests with `test_pipeline_report.py`
+
+If you want to try **many configs automatically**:
+
+1. Look inside `test_cases/`.
+
+   - Example: `combination_of_controls.json`, `Individual_controls_testing.json`
+   - Each file is just a list of JSON objects (multiple configs).
+
+2. In `test_pipeline_report.py`, edit these two lines:
+
+   ```python
+   TEST_NAME = "Individual_controls_testing"
+   TEST_JSON_PATH = r"test_cases\combination_of_controls.json"
+   ```
+
+👉 **What to change here:**
+
+- `TEST_NAME`: Just a label for the output folder.
+- `TEST_JSON_PATH`: Path to your test JSON file (choose one from `test_cases/` or create your own).
+
+3. Run:
+
+   ```bash
+   python test_pipeline_report.py
+   ```
+
+👉 Outputs will appear in:
+
+```
+test_cases/<TEST_NAME>/<timestamp>/
+```
+
+Includes:
+
+- `compression_report.csv` → table with file sizes & compression
+- `sizes_comparison.png` → bar chart (before vs after)
+- `compression_percent.png` → line chart (compression %)
+- `compression_report.pdf` → summary table + graphs + case-by-case images
+
+---
+
+## 5. 🔀 Explanation of Toggles
+
+Each config JSON can toggle stages on/off:
+
+| Key                       | What it does                            |
+| ------------------------- | --------------------------------------- |
+| `TOGGLE_SAMPLE_CREATOR`   | Copy random sample into `test_sample/`  |
+| `TOGGLE_CONVERT_FORMAT`   | Convert to `OUTPUT_FORMAT` with quality |
+| `TOGGLE_CONVEX_HULL`      | Apply background removal mask           |
+| `TOGGLE_CONVEX_HULL_CROP` | Crop tightly to mask                    |
+| `TOGGLE_GRAYSCALE`        | Convert to grayscale                    |
+| `TOGGLE_DOWNSCALE`        | Downscale by `SCALE_FACTOR`             |
+| `SAVE_DEBUG`              | Save debug images with landmarks/hull   |
+
+Other parameters:
+
+- `OUTPUT_FORMAT`: `"jpg"`, `"webp"`, `"png"`, etc.
+- `JPEG_QUALITY`, `WEBP_QUALITY`: 0–100 quality factors
+- `SCALE_FACTOR`: e.g. `0.75` → shrink to 75%
+- `PADDING`: Extra pixels around hull mask
+
+---
+
+## 6. 🖼 Example Walkthroughs
+
+### Example 1: Single run with grayscale
+
+- Edit `run.py` → set `SAMPLE_INPUT_DIR` to your dataset
+- Set `"TOGGLE_GRAYSCALE": true`
+- Run `python run.py`
+- Output in `output/final_results/`
+
+### Example 2: Run predefined batch
+
+- Open `test_pipeline_report.py`
+- Point to `test_cases/combination_of_controls.json`
+- Run `python test_pipeline_report.py`
+- Check `test_cases/combination_of_controls/<timestamp>/compression_report.pdf`
+
+### Example 3: Make your own test JSON
+
+- Copy `test_cases/combination_of_controls.json` → `test_cases/my_experiments.json`
+- Edit toggles/parameters
+- Point `TEST_JSON_PATH` to your file
+- Run the test report script
+
+---
 
 
 --- FILE: requirements.txt ---
@@ -394,294 +366,374 @@ pytest
 
 --- FILE: run.py ---
 
-from pathlib import Path
-from PIL import Image
-import cv2, numpy as np, shutil, json
-
-# Import helpers
-from sample_creator import create_test_sample
-from convert_format import process_image as convert_img
-from convex_hull import process_image as convex_img
-from downquality_and_downscale import process_image as downscale_img
-from grayscale import process_image as gray_img
-
-# ===================================================
-# CONFIG (two options)
-# ===================================================
-
-# Option 1: Paste JSON as a string here
-CONFIG_JSON = """
-{
-    "name": "WebP Grayscale",
-    "SAMPLE_INPUT_DIR": "C:/PoiseVideos/4825_Prasanna K.B_189_20250916173306/4825_Prasanna K.B_189_20250916173306",
-    "SAMPLE_SIZE": 50,
-    "TOGGLE_SAMPLE_CREATOR": true,
-    "TOGGLE_CONVERT_FORMAT": true,
-    "TOGGLE_CONVEX_HULL": true,
-    "TOGGLE_CONVEX_HULL_CROP": false,
-    "TOGGLE_GRAYSCALE": true,
-    "TOGGLE_DOWNSCALE": false,
-    "OUTPUT_FORMAT": "webp",
-    "JPEG_QUALITY": 100,
-    "WEBP_QUALITY": 100,
-    "SCALE_FACTOR": 1,
-    "PADDING": 60,
-    "SAVE_DEBUG": false
-  }
+"""
+Unified JPG-only image processing pipeline (Final Version — Black Background)
+------------------------------------------------------------------------------
+Loads configuration from JSON and applies:
+  1. Optional sample creation
+  2. Convex hull masking (with optional cropping)
+  3. Optional grayscale conversion
+  4. Optional downscaling
+All input and output are strictly .jpg.
+This version:
+  ✅ Fixes color inversion
+  ✅ Maintains black background outside hull
+  ✅ Handles grayscale + MozJPEG properly
 """
 
-# Option 2: Load from external JSON file (uncomment this)
-# CONFIG_PATH = Path("config.json")
-# with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-#     CONFIG = json.load(f)
+import cv2, json, shutil, random, subprocess
+import numpy as np
+from pathlib import Path
+from PIL import Image
+import mediapipe as mp
 
-# Use Option 1 by default
-CONFIG = json.loads(CONFIG_JSON)
+# ==========================
+# Load Configuration
+# ==========================
+CONFIG_PATH = Path("config.json")
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    CFG = json.load(f)
 
-# --- Convert certain keys into Path objects ---
-if "SAMPLE_INPUT_DIR" in CONFIG:
-    CONFIG["SAMPLE_INPUT_DIR"] = Path(CONFIG["SAMPLE_INPUT_DIR"])
-if "SAMPLE_OUTPUT_DIR" not in CONFIG:
-    CONFIG["SAMPLE_OUTPUT_DIR"] = Path("test_sample")
+# Convert to Path objects
+CFG["INPUT_DIR"] = Path(CFG["INPUT_DIR"])
+CFG["OUTPUT_DIR"] = Path(CFG.get("OUTPUT_DIR", "output/final_results"))
+CFG["TEMP_DIR"] = Path(CFG.get("TEMP_DIR", "test_sample"))
 
-# Output dirs
-OUTPUT_DIR = Path("output")
-FINAL_RESULT_DIR = OUTPUT_DIR / "final_results"
+# Ensure directories exist
+for key in ["INPUT_DIR", "OUTPUT_DIR", "TEMP_DIR"]:
+    CFG[key].mkdir(parents=True, exist_ok=True)
+
+# ==========================
+# Global Controls
+# ==========================
+TOGGLE_SAMPLE_CREATOR = CFG.get("TOGGLE_SAMPLE_CREATOR", True)
+TOGGLE_CONVEX_HULL = CFG.get("TOGGLE_CONVEX_HULL", True)
+TOGGLE_CONVEX_HULL_CROP = CFG.get("TOGGLE_CONVEX_HULL_CROP", False)
+TOGGLE_GRAYSCALE = CFG.get("TOGGLE_GRAYSCALE", True)
+TOGGLE_DOWNSCALE = CFG.get("TOGGLE_DOWNSCALE", False)
+
+SAMPLE_SIZE = CFG.get("SAMPLE_SIZE", 50)
+JPEG_QUALITY = CFG.get("JPEG_QUALITY", 80)
+SCALE_FACTOR = CFG.get("SCALE_FACTOR", 1.0)
+PADDING = CFG.get("PADDING", 60)
+SAVE_DEBUG = CFG.get("SAVE_DEBUG", False)
+
+# Mediapipe setup
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(static_image_mode=True, model_complexity=2)
+mp_drawing = mp.solutions.drawing_utils
+
+# ==========================
+# Utility functions
+# ==========================
+def clean_dir(path: Path):
+    """Remove and recreate directory."""
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
 
 
-def pipeline(cfg: dict):
-    FINAL_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+def save_jpg(image: np.ndarray, path: Path):
+    """
+    Save image as JPG using MozJPEG for better compression.
+    Accepts BGR or grayscale; outputs correct color with black background.
+    """
+    CJPEG_PATH = Path(CFG.get("MOZJPEG_PATH", "cjpeg.exe"))
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Stage 1: Sample creation
-    if cfg["TOGGLE_SAMPLE_CREATOR"]:
-        create_test_sample(cfg["SAMPLE_INPUT_DIR"], cfg["SAMPLE_OUTPUT_DIR"], cfg["SAMPLE_SIZE"])
-        source = cfg["SAMPLE_OUTPUT_DIR"]
+    temp_png = path.with_name(path.stem + "_temp.png")
+
+    # Write temporary PNG
+    if len(image.shape) == 2:  # grayscale
+        cv2.imwrite(str(temp_png), image)
+    else:  # BGR color
+        cv2.imwrite(str(temp_png), image)
+
+    # Try MozJPEG first
+    if CJPEG_PATH.exists():
+        try:
+            subprocess.run([
+                str(CJPEG_PATH),
+                "-quality", str(JPEG_QUALITY),
+                "-progressive",
+                "-optimize",
+                "-outfile", str(path),
+                str(temp_png)
+            ], check=True)
+            print(f"✅ [MozJPEG] Saved {path.name} (Q={JPEG_QUALITY})")
+        except Exception as e:
+            print(f"⚠️ MozJPEG failed for {path.name}: {e}")
+            _save_with_pillow(image, path)
     else:
-        source = cfg["SAMPLE_INPUT_DIR"]
+        _save_with_pillow(image, path)
 
-    files = list(source.glob("*.*"))
+    if temp_png.exists():
+        temp_png.unlink()
+
+
+def _save_with_pillow(image: np.ndarray, path: Path):
+    """Fallback save using Pillow if MozJPEG unavailable."""
+    if len(image.shape) == 2:  # grayscale
+        Image.fromarray(image).save(path, "JPEG", quality=JPEG_QUALITY, optimize=True)
+    else:  # color image (BGR → RGB)
+        Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)).save(path, "JPEG", quality=JPEG_QUALITY, optimize=True)
+    print("⚠️ Saved with Pillow fallback.")
+
+
+def crop_to_mask(image: np.ndarray, mask: np.ndarray):
+    """Crops the image tightly around the nonzero region of the mask."""
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0 or len(ys) == 0:
+        return image
+    return image[ys.min():ys.max(), xs.min():xs.max()]
+
+
+# ==========================
+# Stage 1 — Sample Creation
+# ==========================
+def create_sample(input_dir: Path, output_dir: Path, sample_size: int):
+    images = sorted([p for p in input_dir.glob("*.jpg")])
+    if not images:
+        raise ValueError(f"No .jpg files in {input_dir}")
+    sample = random.sample(images, min(sample_size, len(images)))
+    for img in sample:
+        shutil.copy(img, output_dir / img.name)
+    print(f"✅ Copied {len(sample)} samples to {output_dir}")
+
+
+# ==========================
+# Stage 2 — Convex Hull Mask
+# ==========================
+def apply_convex_hull(img: np.ndarray, crop=False):
+    """
+    Apply convex hull around detected pose landmarks.
+    Keeps inside of hull, fills background with black.
+    """
+    h, w, _ = img.shape
+    rgb_for_pose = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    results = pose.process(rgb_for_pose)
+
+    if not results.pose_landmarks:
+        return img
+
+    # Extract pose points and convex hull
+    points = np.array([[int(lm.x * w), int(lm.y * h)] for lm in results.pose_landmarks.landmark])
+    hull = cv2.convexHull(points)
+
+    # Create binary mask and apply padding
+    mask = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(mask, hull, 255)
+    mask = cv2.dilate(mask, np.ones((PADDING, PADDING), np.uint8), iterations=1)
+
+    # Black background instead of white
+    result = np.zeros_like(img)
+    result[mask == 255] = img[mask == 255]
+
+    if crop:
+        result = crop_to_mask(result, mask)
+
+    return result  # stays BGR
+
+
+# ==========================
+# Stage 3 — Grayscale
+# ==========================
+def to_grayscale(img: np.ndarray):
+    """Convert color (BGR) image to grayscale."""
+    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+
+# ==========================
+# Stage 4 — Downscale
+# ==========================
+def downscale(img: np.ndarray, factor: float):
+    """Resize image by given factor."""
+    h, w = img.shape[:2]
+    new_size = (int(w * factor), int(h * factor))
+    return cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
+
+
+# ==========================
+# Main Pipeline
+# ==========================
+def pipeline():
+    clean_dir(CFG["OUTPUT_DIR"])
+    if TOGGLE_SAMPLE_CREATOR:
+        clean_dir(CFG["TEMP_DIR"])
+        create_sample(CFG["INPUT_DIR"], CFG["TEMP_DIR"], SAMPLE_SIZE)
+        source = CFG["TEMP_DIR"]
+    else:
+        source = CFG["INPUT_DIR"]
+
+    files = list(source.glob("*.jpg"))
     if not files:
-        print(f"⚠️ No files found in {source}")
+        print("⚠️ No input JPG files found.")
         return
 
-    print(f"📂 Found {len(files)} files to process from {source}")
-
     for f in files:
-        try:
-            img = Image.open(f)
-            fname, fmt, params = f.name, img.format, {}
+        img = cv2.imread(str(f))
+        if img is None:
+            print(f"⚠️ Could not read {f.name}")
+            continue
 
-            # Stage 2: Convert format
-            if cfg["TOGGLE_CONVERT_FORMAT"]:
-                img, fname, fmt, params = convert_img(
-                    img, fname,
-                    cfg["OUTPUT_FORMAT"],
-                    cfg["JPEG_QUALITY"],
-                    cfg["WEBP_QUALITY"]
-                )
+        # 1️⃣ Convex Hull
+        if TOGGLE_CONVEX_HULL:
+            img = apply_convex_hull(img, crop=TOGGLE_CONVEX_HULL_CROP)
 
-            # Stage 3: Convex hull
-            if cfg["TOGGLE_CONVEX_HULL"]:
-                cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                cv_res, fname, dbg = convex_img(
-                    cv_img, fname,
-                    crop=cfg["TOGGLE_CONVEX_HULL_CROP"],
-                    padding=cfg["PADDING"],
-                    jpeg_quality=cfg["JPEG_QUALITY"],
-                    webp_quality=cfg["WEBP_QUALITY"],
-                    save_debug=cfg["SAVE_DEBUG"],
-                    debug_dir=OUTPUT_DIR / "convex_hull/debug"
-                )
-                img = Image.fromarray(cv2.cvtColor(cv_res, cv2.COLOR_BGR2RGB))
+        # 2️⃣ Grayscale
+        if TOGGLE_GRAYSCALE:
+            img = to_grayscale(img)
 
-            # Stage 4: Downscale
-            if cfg["TOGGLE_DOWNSCALE"]:
-                img, fname, fmt, params = downscale_img(
-                    img, fname,
-                    scale_factor=cfg["SCALE_FACTOR"],
-                    jpeg_quality=cfg["JPEG_QUALITY"],
-                    webp_quality=cfg["WEBP_QUALITY"]
-                )
+        # 3️⃣ Downscale
+        if TOGGLE_DOWNSCALE and SCALE_FACTOR < 1:
+            img = downscale(img, SCALE_FACTOR)
 
-            # Stage 5: Grayscale
-            if cfg["TOGGLE_GRAYSCALE"]:
-                img, fname, fmt, params = gray_img(
-                    img, fname,
-                    jpeg_quality=cfg["JPEG_QUALITY"],
-                    webp_quality=cfg["WEBP_QUALITY"]
-                )
+        # 4️⃣ Save result
+        out_path = CFG["OUTPUT_DIR"] / f.name
+        save_jpg(img, out_path)
+        print(f"✅ Saved {out_path.name}")
 
-            # Final save
-            out_path = FINAL_RESULT_DIR / fname
-            img.save(out_path, fmt, **params)
-            print(f"✅ Final saved {fname}")
-
-        except Exception as e:
-            print(f"⚠️ Failed {f.name}: {e}")
+    print("🎉 Processing complete!")
 
 
+# ==========================
+# Run
+# ==========================
 if __name__ == "__main__":
-    if FINAL_RESULT_DIR.exists():
-        shutil.rmtree(FINAL_RESULT_DIR)
-    FINAL_RESULT_DIR.mkdir(parents=True, exist_ok=True)
-
-    print(f"🚀 Running pipeline: {CONFIG['name']}")
-    pipeline(CONFIG)
-    print("🎉 Pipeline finished!")
+    print(f"🚀 Running unified JPG pipeline: {CFG.get('name', 'Unnamed run')}")
+    pipeline()
 
 
---- FILE: sample_creator.py ---
+--- FILE: test_pipeline_run.py ---
 
-import random
-import shutil
+"""
+MozJPEG-Integrated Test Pipeline (Fixed Version)
+------------------------------------------------
+Runs multiple configurations from a JSON file using the updated run.py pipeline
+that supports MozJPEG compression and sample creation.
+Generates CSV, PNG graphs, and a PDF report comparing compression performance.
+Now correctly handles grayscale visualization in Matplotlib (no false color).
+"""
+
+import json, shutil, subprocess, sys, textwrap
 from pathlib import Path
-from clean_dir import clean_directory
-
-# === Defaults for standalone ===
-INPUT_DIR = Path(r"C:\PoiseVideos\4825_Prasanna K.B_189_20250916173306\4825_Prasanna K.B_189_20250916173306")        # main dataset
-OUTPUT_DIR = Path("test_sample")
-SAMPLE_SIZE = 100
-
-def create_test_sample(input_dir: Path, output_dir: Path, sample_size: int):
-    """Copy a random sample of images from input_dir to output_dir."""
-    images = sorted([p for p in input_dir.iterdir() if p.suffix.lower() in {".jpg", ".png", ".webp"}])
-    if not images:
-        raise ValueError(f"No images found in {input_dir}")
-    if sample_size > len(images):
-        raise ValueError("Sample size larger than available images")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    clean_directory(output_dir)
-
-    sampled = random.sample(images, sample_size)
-    for img in sampled:
-        shutil.copy(img, output_dir / img.name)
-
-    print(f"✅ Copied {sample_size} images to {output_dir}")
-
-if __name__ == "__main__":
-    create_test_sample(INPUT_DIR, OUTPUT_DIR, SAMPLE_SIZE)
-
-
---- FILE: test_pipeline_report.py ---
-
-import shutil
-from pathlib import Path
-import run
-import matplotlib.pyplot as plt
-import pandas as pd
 from datetime import datetime
-import json
-import textwrap
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 from PIL import Image
 
-#Enter the name of your test 
-TEST_NAME = "Individual_controls_testing"
+# ======================
+# Config
+# ======================
+TEST_NAME = "mozjpeg_combination_test"
+TEST_JSON_PATH = Path("test_cases\dataset_comparison.json")
+PIPELINE_SCRIPT = "run.py"
 
-#Enter the relative path of your test case json
-TEST_JSON_PATH = r"test_cases\combination_of_controls.json"
+# Default MozJPEG path (update if needed)
+MOZJPEG_PATH = r"C:/DATA/Internships/Newro Kaaya/Working_Build_v3/mozjpeg_4.1.1_x64/mozjpeg_4.1.1_x64/shared/tools/cjpeg.exe"
 
-'''--------------------------------------------------------------------------------------------------------------------------------'''
-
+# ======================
+# Helpers
+# ======================
 def get_folder_size(path: Path) -> int:
+    """Returns total folder size in bytes."""
     return sum(f.stat().st_size for f in path.glob("**/*") if f.is_file())
 
-# ==============================
-# Load test cases from JSON
-# ==============================
-def load_test_cases(json_file=Path(TEST_JSON_PATH)):
-    with open(json_file, "r", encoding="utf-8") as f:
-        raw_cases = json.load(f)
+# ======================
+# Main test runner
+# ======================
+def run_experiments():
+    with open(TEST_JSON_PATH, "r", encoding="utf-8") as f:
+        test_cases = json.load(f)
 
-    # Convert SAMPLE_INPUT_DIR strings into Path objects
-    for case in raw_cases:
-        case["SAMPLE_INPUT_DIR"] = Path(case["SAMPLE_INPUT_DIR"])
-        case["SAMPLE_OUTPUT_DIR"] = Path("test_sample")  # always reset to same folder
-    return raw_cases
-
-
-def run_experiments(test_cases, run_dir: Path):
-    results = []
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = Path("test_cases") / TEST_NAME / timestamp
+    run_dir.mkdir(parents=True, exist_ok=True)
     buffer_dir = run_dir / "buffers"
     buffer_dir.mkdir(parents=True, exist_ok=True)
 
-    for idx, case in enumerate(test_cases):
-        print(f"\n=== Running test case: {case['name']} ===")
+    results = []
 
-        # Reset final results dir before each case
-        if run.FINAL_RESULT_DIR.exists():
-            shutil.rmtree(run.FINAL_RESULT_DIR)
-        run.FINAL_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    for idx, case in enumerate(test_cases, start=1):
+        print(f"\n=== Running test case {idx}: {case['name']} ===")
 
-        # Merge with defaults
-        merged_cfg = {**run.CONFIG, **case}
+        # --- Ensure MozJPEG + Sample Creation are always enabled ---
+        case["MOZJPEG_PATH"] = case.get("MOZJPEG_PATH", MOZJPEG_PATH)
+        case["TOGGLE_SAMPLE_CREATOR"] = True
 
-        # Run pipeline with this test case config
-        run.pipeline(merged_cfg)
+        # Write current case config
+        with open("config.json", "w", encoding="utf-8") as f:
+            json.dump(case, f, indent=2)
 
-        # Measure sizes
-        sample_size = get_folder_size(merged_cfg["SAMPLE_OUTPUT_DIR"])
-        final_size = get_folder_size(run.FINAL_RESULT_DIR)
+        # Run pipeline safely
+        try:
+            subprocess.run([sys.executable, PIPELINE_SCRIPT], check=True)
+        except subprocess.CalledProcessError:
+            print(f"⚠️ Pipeline failed for case {case['name']}")
+            continue
+
+        # Measure compression
+        sample_dir = Path("test_sample")
+        final_dir = Path("output/final_results")
+
+        sample_size = get_folder_size(sample_dir)
+        final_size = get_folder_size(final_dir)
         compression = 100 * (1 - final_size / sample_size) if sample_size > 0 else 0
 
-        # ---- Pick one sample + corresponding result to buffer ----
-        sample_images = list(merged_cfg["SAMPLE_OUTPUT_DIR"].glob("*.*"))
-        final_images = list(run.FINAL_RESULT_DIR.glob("*.*"))
-
-        if sample_images and final_images:
-            sample_img = sample_images[0]
-            final_img = final_images[0]
-
-            case_buf_dir = buffer_dir / f"case_{idx+1}"
+        # Copy one sample + final example image for comparison
+        sample_img = next(sample_dir.glob("*.jpg"), None)
+        final_img = next(final_dir.glob("*.jpg"), None)
+        if sample_img and final_img:
+            case_buf_dir = buffer_dir / f"case_{idx}"
             case_buf_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(sample_img, case_buf_dir / "sample.jpg")
+            shutil.copy(final_img, case_buf_dir / "final.jpg")
 
-            # Copy
-            sample_copy = case_buf_dir / f"sample{sample_img.suffix}"
-            final_copy = case_buf_dir / f"final{final_img.suffix}"
-            shutil.copy(sample_img, sample_copy)
-            shutil.copy(final_img, final_copy)
-
-        # Record result
+        # Collect results
         results.append({
-            "Case": merged_cfg["name"],
-            "Format": merged_cfg["OUTPUT_FORMAT"],
-            "JPEG_Q": merged_cfg["JPEG_QUALITY"],
-            "WEBP_Q": merged_cfg["WEBP_QUALITY"],
-            "Scale": merged_cfg["SCALE_FACTOR"],
-            "ConvexHull": merged_cfg["TOGGLE_CONVEX_HULL"],
-            "Crop": merged_cfg["TOGGLE_CONVEX_HULL_CROP"],
-            "Grayscale": merged_cfg["TOGGLE_GRAYSCALE"],
-            "Downscale": merged_cfg["TOGGLE_DOWNSCALE"],
+            "Case": case["name"],
+            "JPEG_Q": case.get("JPEG_QUALITY", 80),
+            "Scale": case.get("SCALE_FACTOR", 1.0),
+            "ConvexHull": case.get("TOGGLE_CONVEX_HULL", True),
+            "Crop": case.get("TOGGLE_CONVEX_HULL_CROP", False),
+            "Grayscale": case.get("TOGGLE_GRAYSCALE", True),
+            "Downscale": case.get("TOGGLE_DOWNSCALE", False),
+            "MozJPEG": Path(case["MOZJPEG_PATH"]).exists(),
             "SampleSizeKB": sample_size / 1024,
             "FinalSizeKB": final_size / 1024,
             "Compression%": compression,
         })
 
-    return pd.DataFrame(results)
+    df = pd.DataFrame(results)
+    if not df.empty:
+        df.to_csv(run_dir / "compression_report.csv", index=False)
+        print(f"\n✅ Results saved → {run_dir/'compression_report.csv'}")
+        generate_pdf_report(df, run_dir)
+    else:
+        print("⚠️ No successful test cases recorded.")
+    return df
 
-
-def generate_report(df: pd.DataFrame, run_dir: Path):
-    # Wrap long text in Case column for better fit
+# ======================
+# PDF report generator
+# ======================
+def generate_pdf_report(df: pd.DataFrame, run_dir: Path):
     df = df.copy()
     df["Case"] = df["Case"].apply(lambda x: "\n".join(textwrap.wrap(x, width=18)))
 
-    # Save CSV
-    df.to_csv(run_dir / "compression_report.csv", index=False)
-
-    # Bar chart
+    # ---------- Charts ----------
     plt.figure(figsize=(10,6))
     bar_width = 0.35
     x = range(len(df))
-    plt.bar([i - bar_width/2 for i in x], df["SampleSizeKB"], width=bar_width, label="Test Sample (total)")
-    plt.bar([i + bar_width/2 for i in x], df["FinalSizeKB"], width=bar_width, label="Final Result (total)")
+    plt.bar([i - bar_width/2 for i in x], df["SampleSizeKB"], width=bar_width, label="Sample Total")
+    plt.bar([i + bar_width/2 for i in x], df["FinalSizeKB"], width=bar_width, label="Final Total")
     plt.xticks(x, df["Case"], rotation=20, ha="right")
-    plt.ylabel("Size (KB)")
-    plt.title("Total Folder Size: Test Sample vs Final Result")
+    plt.ylabel("Folder Size (KB)")
+    plt.title("Total Size: Sample vs Final Result")
     plt.legend()
     plt.tight_layout()
     plt.savefig(run_dir / "sizes_comparison.png")
 
-    # Line chart
     plt.figure(figsize=(10,6))
     plt.plot(df["Case"], df["Compression%"], marker="o")
     plt.ylabel("Compression (%)")
@@ -690,184 +742,212 @@ def generate_report(df: pd.DataFrame, run_dir: Path):
     plt.tight_layout()
     plt.savefig(run_dir / "compression_percent.png")
 
-    # Combine into PDF
-    from matplotlib.backends.backend_pdf import PdfPages
+    # ---------- PDF Generation ----------
     with PdfPages(run_dir / "compression_report.pdf") as pdf:
-        # --- Fix table layout ---
-        # Drop only per-image sizes (if present)
-        df_table = df.drop(columns=["SampleImageSizeKB", "FinalImageSizeKB"], errors="ignore")
-
+        # Table
         fig, ax = plt.subplots(figsize=(12,4))
         ax.axis("tight"); ax.axis("off")
-        table = ax.table(cellText=df_table.round(2).values,
-                         colLabels=df_table.columns,
-                         loc="center")
+        table = ax.table(cellText=df.round(2).values, colLabels=df.columns, loc="center")
         table.auto_set_font_size(False)
         table.set_fontsize(8)
         table.scale(1.2, 1.4)
-        table.auto_set_column_width(col=list(range(len(df_table.columns))))
+        pdf.savefig(fig); plt.close(fig)
 
-        # --- Dynamic row heights ---
-        for (row, col), cell in table.get_celld().items():
-            if row == 0:  # header
-                cell.set_height(0.12)
-                cell.set_text_props(weight="bold", ha="center", va="center")
-            else:
-                txt = str(df_table.iloc[row-1, col])
-                num_lines = txt.count("\n") + 1
-                cell.set_height(0.08 * num_lines)
-                cell.set_text_props(ha="center", va="center")
+        # Charts
+        for img_file in ["sizes_comparison.png", "compression_percent.png"]:
+            img = plt.imread(run_dir / img_file)
+            fig, ax = plt.subplots(figsize=(10,6))
+            ax.imshow(img)
+            ax.axis("off")
+            ax.set_title(img_file.replace(".png", "").replace("_", " ").title())
+            pdf.savefig(fig); plt.close(fig)
 
-        pdf.savefig(fig)
-
-        # Add graphs
-        pdf.savefig(plt.figure(1))
-        pdf.savefig(plt.figure(2))
-
-        # ---- Add case-by-case image slides ----
+        # ---------- Case-by-case comparison ----------
         buffer_dir = run_dir / "buffers"
-        for idx, case in enumerate(df["Case"], start=1):
-            case_buf_dir = buffer_dir / f"case_{idx}"
-            sample_candidates = list(case_buf_dir.glob("sample.*"))
-            final_candidates = list(case_buf_dir.glob("final.*"))
-            if not sample_candidates or not final_candidates:
+        for idx, row in df.iterrows():
+            case_buf = buffer_dir / f"case_{idx+1}"
+            sample = case_buf / "sample.jpg"
+            final = case_buf / "final.jpg"
+            if not sample.exists() or not final.exists():
                 continue
 
-            sample_img = sample_candidates[0]
-            final_img = final_candidates[0]
+            s_img = Image.open(sample)
+            f_img = Image.open(final)
+            s_res, f_res = s_img.size, f_img.size
+            s_size, f_size = sample.stat().st_size / 1024, final.stat().st_size / 1024
 
-            # Get resolution
-            s_res = Image.open(sample_img).size
-            f_res = Image.open(final_img).size
-
-            # Get sizes
-            s_size = sample_img.stat().st_size / 1024
-            f_size = final_img.stat().st_size / 1024
-
-            # Get quality info
-            row = df.iloc[idx-1]
-            q_info = f"JPEG_Q={row['JPEG_Q']} | WEBP_Q={row['WEBP_Q']} | Format={row['Format']}"
-
-            # Plot side-by-side with resolution + size
             fig, axs = plt.subplots(1, 2, figsize=(12,6))
-            for ax, img_path, title, res, size_kb in [
-                (axs[0], sample_img, "Sample", s_res, s_size),
-                (axs[1], final_img, "Final", f_res, f_size),
+            for ax, im, name, res, size in [
+                (axs[0], s_img, "Sample", s_res, s_size),
+                (axs[1], f_img, "Final", f_res, f_size)
             ]:
-                img = plt.imread(img_path)
-                ax.imshow(img)
-                ax.set_title(f"{title}\n{res[0]}x{res[1]} | {size_kb:.1f} KB")
-                if title == "Final":
-                    ax.set_xlabel(q_info)
-                ax.set_xticks(range(0, res[0], max(1,res[0]//5)))
-                ax.set_yticks(range(0, res[1], max(1,res[1]//5)))
+                # ✅ FIX: Display grayscale correctly (no false color)
+                if im.mode == "L":
+                    ax.imshow(im, cmap="gray", vmin=0, vmax=255)
+                else:
+                    ax.imshow(im)
+                ax.axis("off")
+                ax.set_title(f"{name}\n{res[0]}×{res[1]} | {size:.1f} KB")
 
-            plt.suptitle(f"Case {idx}: {row['Case']}")
+            plt.suptitle(f"Case {idx+1}: {row['Case']}")
             pdf.savefig(fig)
             plt.close(fig)
 
-    print(f"✅ Report generated in: {run_dir}")
+    print(f"📄 PDF report saved → {run_dir/'compression_report.pdf'}")
 
-
+# ======================
+# Entry point
+# ======================
 if __name__ == "__main__":
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path("test_cases") / TEST_NAME / timestamp
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    cases = load_test_cases(TEST_JSON_PATH)
-    df = run_experiments(cases, run_dir)
-    generate_report(df, run_dir)
+    df = run_experiments()
+    print("\n🎉 Done! All reports generated successfully.")
 
 
 --- FILE: test_cases/combination_of_controls.json ---
 
 [
   {
-    "name": "WebP default",
-    "SAMPLE_INPUT_DIR": "C:/PoiseVideos/4825_Prasanna K.B_189_20250916173306/4825_Prasanna K.B_189_20250916173306",
+    "name": "JPG QF = 10",
+  "INPUT_DIR": "C:/DATA/Internships/Newro Kaaya/Data/Data/Shabari/Bottle/Left/PoiseVideos_20251102122759/PoiseVideos_20251102122759",
+    "OUTPUT_DIR": "output/final_results",
+    "TEMP_DIR": "test_sample",
     "SAMPLE_SIZE": 50,
     "TOGGLE_SAMPLE_CREATOR": true,
-    "TOGGLE_CONVERT_FORMAT": true,
     "TOGGLE_CONVEX_HULL": true,
     "TOGGLE_CONVEX_HULL_CROP": false,
     "TOGGLE_GRAYSCALE": false,
-    "TOGGLE_DOWNSCALE": false,
-    "OUTPUT_FORMAT": "webp",
-    "JPEG_QUALITY": 100,
-    "WEBP_QUALITY": 100,
+    "TOGGLE_DOWNSCALE": true,
+    "JPEG_QUALITY": 10,
     "SCALE_FACTOR": 1,
     "PADDING": 60,
-    "SAVE_DEBUG": false
+    "SAVE_DEBUG": false,
+    "MOZJPEG_PATH": "C:/DATA/Internships/Newro Kaaya/Working_Build_v3/mozjpeg_4.1.1_x64/mozjpeg_4.1.1_x64/shared/tools/cjpeg.exe"
   },
   {
-    "name": "WebP Grayscale + QF",
-    "SAMPLE_INPUT_DIR": "C:/PoiseVideos/4825_Prasanna K.B_189_20250916173306/4825_Prasanna K.B_189_20250916173306",
+    "name": "JPG QF = 10 b/w",
+  "INPUT_DIR": "C:/DATA/Internships/Newro Kaaya/Data/Data/Shabari/Bottle/Left/PoiseVideos_20251102122759/PoiseVideos_20251102122759",
+    "OUTPUT_DIR": "output/final_results",
+    "TEMP_DIR": "test_sample",
     "SAMPLE_SIZE": 50,
     "TOGGLE_SAMPLE_CREATOR": true,
-    "TOGGLE_CONVERT_FORMAT": true,
     "TOGGLE_CONVEX_HULL": true,
     "TOGGLE_CONVEX_HULL_CROP": false,
     "TOGGLE_GRAYSCALE": true,
-    "TOGGLE_DOWNSCALE": false,
-    "OUTPUT_FORMAT": "webp",
-    "JPEG_QUALITY": 75,
-    "WEBP_QUALITY": 75,
+    "TOGGLE_DOWNSCALE": true,
+    "JPEG_QUALITY": 10,
     "SCALE_FACTOR": 1,
     "PADDING": 60,
-    "SAVE_DEBUG": false
-  },
-  {
-    "name": "WebP Grayscale + QF + Crop",
-    "SAMPLE_INPUT_DIR": "C:/PoiseVideos/4825_Prasanna K.B_189_20250916173306/4825_Prasanna K.B_189_20250916173306",
-    "SAMPLE_SIZE": 50,
-    "TOGGLE_SAMPLE_CREATOR": true,
-    "TOGGLE_CONVERT_FORMAT": true,
-    "TOGGLE_CONVEX_HULL": true,
-    "TOGGLE_CONVEX_HULL_CROP": true,
-    "TOGGLE_GRAYSCALE": true,
-    "TOGGLE_DOWNSCALE": false,
-    "OUTPUT_FORMAT": "webp",
-    "JPEG_QUALITY": 75,
-    "WEBP_QUALITY": 75,
-    "SCALE_FACTOR": 1,
-    "PADDING": 60,
-    "SAVE_DEBUG": false
-  },
-  {
-    "name": "WebP Grayscale + QF + Downscale",
-    "SAMPLE_INPUT_DIR": "C:/PoiseVideos/4825_Prasanna K.B_189_20250916173306/4825_Prasanna K.B_189_20250916173306",
-    "SAMPLE_SIZE": 50,
-    "TOGGLE_SAMPLE_CREATOR": true,
-    "TOGGLE_CONVERT_FORMAT": true,
-    "TOGGLE_CONVEX_HULL": true,
-    "TOGGLE_CONVEX_HULL_CROP": false,
-    "TOGGLE_GRAYSCALE": true,
-    "TOGGLE_DOWNSCALE": false,
-    "OUTPUT_FORMAT": "webp",
-    "JPEG_QUALITY": 75,
-    "WEBP_QUALITY": 75,
-    "SCALE_FACTOR": 0.75,
-    "PADDING": 60,
-    "SAVE_DEBUG": false
-  },
-  {
-    "name": "WebP Grayscale + QF + Downscale + Crop",
-    "SAMPLE_INPUT_DIR": "C:/PoiseVideos/4825_Prasanna K.B_189_20250916173306/4825_Prasanna K.B_189_20250916173306",
-    "SAMPLE_SIZE": 50,
-    "TOGGLE_SAMPLE_CREATOR": true,
-    "TOGGLE_CONVERT_FORMAT": true,
-    "TOGGLE_CONVEX_HULL": true,
-    "TOGGLE_CONVEX_HULL_CROP": true,
-    "TOGGLE_GRAYSCALE": true,
-    "TOGGLE_DOWNSCALE": false,
-    "OUTPUT_FORMAT": "webp",
-    "JPEG_QUALITY": 75,
-    "WEBP_QUALITY": 75,
-    "SCALE_FACTOR": 0.75,
-    "PADDING": 60,
-    "SAVE_DEBUG": false
+    "SAVE_DEBUG": false,
+    "MOZJPEG_PATH": "C:/DATA/Internships/Newro Kaaya/Working_Build_v3/mozjpeg_4.1.1_x64/mozjpeg_4.1.1_x64/shared/tools/cjpeg.exe"
   }
-  
+]
+
+
+--- FILE: test_cases/dataset_comparison.json ---
+
+[
+  {
+    "name": "JPG QF = 10",
+  "INPUT_DIR": "C:/DATA/Internships/Newro Kaaya/Data/Data/Shabari/Bottle/Left/PoiseVideos_20251102122759/PoiseVideos_20251102122759",
+    "OUTPUT_DIR": "output/final_results",
+    "TEMP_DIR": "test_sample",
+    "SAMPLE_SIZE": 20,
+    "TOGGLE_SAMPLE_CREATOR": true,
+    "TOGGLE_CONVEX_HULL": true,
+    "TOGGLE_CONVEX_HULL_CROP": false,
+    "TOGGLE_GRAYSCALE": false,
+    "TOGGLE_DOWNSCALE": true,
+    "JPEG_QUALITY": 10,
+    "SCALE_FACTOR": 1,
+    "PADDING": 60,
+    "SAVE_DEBUG": false,
+    "MOZJPEG_PATH": "C:/DATA/Internships/Newro Kaaya/Working_Build_v3/mozjpeg_4.1.1_x64/mozjpeg_4.1.1_x64/shared/tools/cjpeg.exe"
+  },
+  {
+    "name": "JPG QF = 10 b/w",
+  "INPUT_DIR": "C:/DATA/Internships/Newro Kaaya/Data/Data/Shabari/Bottle/Left/PoiseVideos_20251102122759/PoiseVideos_20251102122759",
+    "OUTPUT_DIR": "output/final_results",
+    "TEMP_DIR": "test_sample",
+    "SAMPLE_SIZE": 20,
+    "TOGGLE_SAMPLE_CREATOR": true,
+    "TOGGLE_CONVEX_HULL": true,
+    "TOGGLE_CONVEX_HULL_CROP": false,
+    "TOGGLE_GRAYSCALE": true,
+    "TOGGLE_DOWNSCALE": true,
+    "JPEG_QUALITY": 10,
+    "SCALE_FACTOR": 1,
+    "PADDING": 60,
+    "SAVE_DEBUG": false,
+    "MOZJPEG_PATH": "C:/DATA/Internships/Newro Kaaya/Working_Build_v3/mozjpeg_4.1.1_x64/mozjpeg_4.1.1_x64/shared/tools/cjpeg.exe"
+  },
+    {
+    "name": "JPG QF = 10",
+  "INPUT_DIR": "C:/DATA/Internships/Newro Kaaya/Data/Data/Anvita/Bottle/Left/PoiseVideos_20251102081035/PoiseVideos_20251102081035",
+    "OUTPUT_DIR": "output/final_results",
+    "TEMP_DIR": "test_sample",
+    "SAMPLE_SIZE": 20,
+    "TOGGLE_SAMPLE_CREATOR": true,
+    "TOGGLE_CONVEX_HULL": true,
+    "TOGGLE_CONVEX_HULL_CROP": false,
+    "TOGGLE_GRAYSCALE": false,
+    "TOGGLE_DOWNSCALE": true,
+    "JPEG_QUALITY": 10,
+    "SCALE_FACTOR": 1,
+    "PADDING": 60,
+    "SAVE_DEBUG": false,
+    "MOZJPEG_PATH": "C:/DATA/Internships/Newro Kaaya/Working_Build_v3/mozjpeg_4.1.1_x64/mozjpeg_4.1.1_x64/shared/tools/cjpeg.exe"
+  },
+  {
+    "name": "JPG QF = 10 b/w",
+  "INPUT_DIR": "C:/DATA/Internships/Newro Kaaya/Data/Data/Anvita/Bottle/Left/PoiseVideos_20251102081035/PoiseVideos_20251102081035",
+    "OUTPUT_DIR": "output/final_results",
+    "TEMP_DIR": "test_sample",
+    "SAMPLE_SIZE": 20,
+    "TOGGLE_SAMPLE_CREATOR": true,
+    "TOGGLE_CONVEX_HULL": true,
+    "TOGGLE_CONVEX_HULL_CROP": false,
+    "TOGGLE_GRAYSCALE": true,
+    "TOGGLE_DOWNSCALE": true,
+    "JPEG_QUALITY": 10,
+    "SCALE_FACTOR": 1,
+    "PADDING": 60,
+    "SAVE_DEBUG": false,
+    "MOZJPEG_PATH": "C:/DATA/Internships/Newro Kaaya/Working_Build_v3/mozjpeg_4.1.1_x64/mozjpeg_4.1.1_x64/shared/tools/cjpeg.exe"
+  },
+      {
+    "name": "JPG QF = 10",
+  "INPUT_DIR": "C:/DATA/Internships/Newro Kaaya/Data/Data/Ghosh/Bottle/Left/PoiseVideos_20251102171753/PoiseVideos_20251102171753",
+    "OUTPUT_DIR": "output/final_results",
+    "TEMP_DIR": "test_sample",
+    "SAMPLE_SIZE": 20,
+    "TOGGLE_SAMPLE_CREATOR": true,
+    "TOGGLE_CONVEX_HULL": true,
+    "TOGGLE_CONVEX_HULL_CROP": false,
+    "TOGGLE_GRAYSCALE": false,
+    "TOGGLE_DOWNSCALE": true,
+    "JPEG_QUALITY": 10,
+    "SCALE_FACTOR": 1,
+    "PADDING": 60,
+    "SAVE_DEBUG": false,
+    "MOZJPEG_PATH": "C:/DATA/Internships/Newro Kaaya/Working_Build_v3/mozjpeg_4.1.1_x64/mozjpeg_4.1.1_x64/shared/tools/cjpeg.exe"
+  },
+  {
+    "name": "JPG QF = 10 b/w",
+  "INPUT_DIR": "C:/DATA/Internships/Newro Kaaya/Data/Data/Ghosh/Bottle/Left/PoiseVideos_20251102171753/PoiseVideos_20251102171753",
+    "OUTPUT_DIR": "output/final_results",
+    "TEMP_DIR": "test_sample",
+    "SAMPLE_SIZE": 20,
+    "TOGGLE_SAMPLE_CREATOR": true,
+    "TOGGLE_CONVEX_HULL": true,
+    "TOGGLE_CONVEX_HULL_CROP": false,
+    "TOGGLE_GRAYSCALE": true,
+    "TOGGLE_DOWNSCALE": true,
+    "JPEG_QUALITY": 10,
+    "SCALE_FACTOR": 1,
+    "PADDING": 60,
+    "SAVE_DEBUG": false,
+    "MOZJPEG_PATH": "C:/DATA/Internships/Newro Kaaya/Working_Build_v3/mozjpeg_4.1.1_x64/mozjpeg_4.1.1_x64/shared/tools/cjpeg.exe"
+  }
 ]
 
 
@@ -962,42 +1042,44 @@ if __name__ == "__main__":
 ]
 
 
---- FILE: test_cases/Individual_controls_testing/20251001_131810/compression_report.csv ---
+--- FILE: test_cases/mozjpeg_combination_test/20251026_191240/compression_report.csv ---
 
-Case,Format,JPEG_Q,WEBP_Q,Scale,ConvexHull,Crop,Grayscale,Downscale,SampleSizeKB,FinalSizeKB,Compression%
-WebP default,webp,100,100,1.0,True,False,False,False,344.3447265625,473.703125,-37.56653970828878
-WebP Crop,webp,100,100,1.0,True,True,False,True,343.9619140625,671.76953125,-95.30346348983723
-WebP Grayscale,webp,100,100,1.0,True,False,True,False,344.51953125,417.333984375,-21.135072621517747
-"WebP Quality
-factor",webp,75,75,1.0,True,False,False,True,344.63671875,215.76171875,37.394448411484014
-WebP Downscaling,webp,100,100,0.8,True,False,False,True,344.0087890625,594.185546875,-72.72394362198912
+Case,JPEG_Q,Scale,ConvexHull,Crop,Grayscale,Downscale,MozJPEG,SampleSizeKB,FinalSizeKB,Compression%
+JPG QF = 10,10,1,True,False,False,True,True,343.208984375,148.7001953125,56.67357147328465
+JPG QF = 10 b/w,10,1,True,False,True,True,True,344.5224609375,119.0263671875,65.45178306702834
 
 
---- FILE: test_cases/Individual_controls_testing/20251001_133520/compression_report.csv ---
+--- FILE: test_cases/mozjpeg_combination_test/20251102_184716/compression_report.csv ---
 
-Case,Format,JPEG_Q,WEBP_Q,Scale,ConvexHull,Crop,Grayscale,Downscale,SampleSizeKB,FinalSizeKB,Compression%
-WebP default,webp,100,100,1.0,True,False,False,False,343.6015625,455.10546875,-32.45151315340715
-"WebP Grayscale +
-QF",webp,75,75,1.0,True,False,True,False,343.177734375,190.4140625,44.514447347003816
-"WebP Grayscale +
-QF + Crop",webp,75,75,1.0,True,True,True,False,343.8740234375,221.986328125,35.445450079090776
-"WebP Grayscale +
-QF + Downscale",webp,75,75,0.75,True,False,True,False,344.142578125,198.236328125,42.397035204113486
-"WebP Grayscale +
-QF + Downscale +
-Crop",webp,75,75,0.75,True,True,True,False,343.43359375,223.21484375,35.00494773598426
+Case,JPEG_Q,Scale,ConvexHull,Crop,Grayscale,Downscale,MozJPEG,SampleSizeKB,FinalSizeKB,Compression%
+JPG QF = 10,10,1,True,False,False,True,True,344.2392578125,148.09765625,56.97827807580688
+JPG QF = 10 b/w,10,1,True,False,True,True,True,344.453125,117.849609375,65.78645951462917
 
 
---- FILE: test_cases/Individual_controls_testing/20251001_134123/compression_report.csv ---
+--- FILE: test_cases/mozjpeg_combination_test/20251102_192155/compression_report.csv ---
 
-Case,Format,JPEG_Q,WEBP_Q,Scale,ConvexHull,Crop,Grayscale,Downscale,SampleSizeKB,FinalSizeKB,Compression%
-WebP default,webp,100,100,1.0,True,False,False,False,343.46484375,463.580078125,-34.97162418824706
-"WebP Grayscale +
-QF",webp,75,75,1.0,True,False,True,False,344.7607421875,205.677734375,40.34189244692452
-"WebP Grayscale +
-QF + Crop",webp,75,75,1.0,True,True,True,False,342.830078125,219.0078125,36.117678560237906
-"WebP Grayscale +
-QF + Downscale",webp,75,75,0.75,True,False,True,False,344.3740234375,203.26953125,40.9741974086814
-"WebP Grayscale +
-QF + Downscale +
-Crop",webp,75,75,0.75,True,True,True,False,343.4658203125,221.779296875,35.42900522875445
+Case,JPEG_Q,Scale,ConvexHull,Crop,Grayscale,Downscale,MozJPEG,SampleSizeKB,FinalSizeKB,Compression%
+JPG QF = 10,10,1,True,False,False,True,True,343.5390625,148.623046875,56.73765719873558
+JPG QF = 10 b/w,10,1,True,False,True,True,True,343.7578125,118.986328125,65.38658212313356
+
+
+--- FILE: test_cases/mozjpeg_combination_test/20251102_194921/compression_report.csv ---
+
+Case,JPEG_Q,Scale,ConvexHull,Crop,Grayscale,Downscale,MozJPEG,SampleSizeKB,FinalSizeKB,Compression%
+JPG QF = 10,10,1,True,False,False,True,True,187.3759765625,79.111328125,57.779364475460326
+JPG QF = 10 b/w,10,1,True,False,True,True,True,187.208984375,64.53515625,65.52774618939813
+JPG QF = 10,10,1,True,False,False,True,True,146.8359375,52.6396484375,64.15070497472732
+JPG QF = 10 b/w,10,1,True,False,True,True,True,146.712890625,40.9169921875,72.11084042227458
+JPG QF = 10,10,1,True,False,False,True,True,163.517578125,60.38671875,63.07019744150213
+JPG QF = 10 b/w,10,1,True,False,True,True,True,163.9169921875,48.107421875,70.65135149626752
+
+
+--- FILE: test_cases/mozjpeg_combination_test/20251108_095059/compression_report.csv ---
+
+Case,JPEG_Q,Scale,ConvexHull,Crop,Grayscale,Downscale,MozJPEG,SampleSizeKB,FinalSizeKB,Compression%
+JPG QF = 10,10,1,True,False,False,True,True,187.4130859375,78.87109375,57.91590893695515
+JPG QF = 10 b/w,10,1,True,False,True,True,True,187.59375,64.5908203125,65.56877811094452
+JPG QF = 10,10,1,True,False,False,True,True,146.6474609375,52.4365234375,64.24314263453354
+JPG QF = 10 b/w,10,1,True,False,True,True,True,146.6806640625,41.1015625,71.97888163194652
+JPG QF = 10,10,1,True,False,False,True,True,163.20703125,60.1640625,63.136353845049186
+JPG QF = 10 b/w,10,1,True,False,True,True,True,163.2451171875,47.7041015625,70.77762423502809
